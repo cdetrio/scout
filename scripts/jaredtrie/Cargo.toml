@@ -1,0 +1,26 @@
+[package]
+name = "phase2-jaredtrie"
+version = "0.0.0"
+license = "Apache-2.0"
+repository = "https://github.com/ewasm/scout"
+description = "Eth 2.0 Phase 2 execution script: Jared's trie"
+publish = false
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+num-traits = "0.2.8"
+blake2 = "0.8.0"
+hex = "0.3.2"
+
+[dependencies.ewasm_api]
+git = "https://github.com/ewasm/ewasm-rust-api"
+rev = "1c01982"
+default-features = false
+features = ["std", "eth2", "qimalloc"]
+
+[profile.release]
+lto = true
+debug = false
