@@ -1,0 +1,8 @@
+helloworld:
+  file: "target/wasm32-unknown-unknown/release/sha3hasher.wasm"
+  trimexports:
+    preset: "ewasm"
+  verifyexports:
+    preset: "ewasm"
+  repack:
+    preset: "ewasm"

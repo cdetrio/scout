@@ -20,6 +20,7 @@ const BLOCKDATASIZE_FUNC_INDEX: usize = 1;
 const BLOCKDATACOPY_FUNC_INDEX: usize = 2;
 const SAVEPOSTSTATEROOT_FUNC_INDEX: usize = 3;
 const PUSHNEWDEPOSIT_FUNC_INDEX: usize = 4;
+const DEBUG_FUNC_INDEX: usize = 5;
 
 struct Runtime<'a> {
     memory: Option<MemoryRef>,
@@ -109,6 +110,10 @@ impl<'a> Externals for Runtime<'a> {
 
                 Ok(None)
             }
+            DEBUG_FUNC_INDEX => {
+                println!("debug func!!");
+                Ok(None)
+            }
             PUSHNEWDEPOSIT_FUNC_INDEX => unimplemented!(),
             _ => panic!("unknown function index"),
         }
@@ -143,6 +148,10 @@ impl<'a> ModuleImportResolver for RuntimeModuleImportResolver {
             "eth2_pushNewDeposit" => FuncInstance::alloc_host(
                 Signature::new(&[ValueType::I32][..], None),
                 PUSHNEWDEPOSIT_FUNC_INDEX,
+            ),
+            "eth2_debug" => FuncInstance::alloc_host(
+                Signature::new(&[][..], None),
+                DEBUG_FUNC_INDEX,
             ),
             _ => {
                 return Err(InterpreterError::Function(format!(
@@ -207,11 +216,13 @@ pub fn execute_code(
     pre_state: &Bytes32,
     block_data: &ShardBlockBody,
 ) -> (Bytes32, Vec<Deposit>) {
+    /*
     println!(
         "Executing codesize({}) and data: {:#?}",
         code.len(),
         block_data
     );
+    */
 
     let module = Module::from_buffer(&code).expect("Module loading to succeed");
     let mut imports = ImportsBuilder::new();
@@ -247,9 +258,9 @@ pub fn process_shard_block(
     block: Option<ShardBlock>,
 ) {
     // println!("Beacon state: {:#?}", beacon_state);
-    println!("Executing block: {:#?}", block);
+    //println!("Executing block: {:#?}", block);
 
-    println!("Pre-execution: {:#?}", state);
+    //println!("Pre-execution: {:#?}", state);
 
     // TODO: implement state root handling
 
@@ -269,7 +280,7 @@ pub fn process_shard_block(
 
     // TODO: implement state + deposit root handling
 
-    println!("Post-execution: {:#?}", state)
+    //println!("Post-execution: {:#?}", state) // function names are not here
 }
 
 fn load_file(filename: &str) -> Vec<u8> {
@@ -352,7 +363,7 @@ fn process_yaml_test(filename: &str) {
     let content = load_file(&filename);
     let test_file: TestFile =
         serde_yaml::from_slice::<TestFile>(&content[..]).expect("expected valid yaml");
-    println!("{:#?}", test_file);
+    //println!("{:#?}", test_file);
 
     let beacon_state: BeaconState = test_file.beacon_state.into();
     let pre_state: ShardState = test_file.shard_pre_state.into();
@@ -362,7 +373,7 @@ fn process_yaml_test(filename: &str) {
     for block in test_file.shard_blocks {
         process_shard_block(&mut shard_state, &beacon_state, Some(block.into()))
     }
-    println!("{:#?}", shard_state);
+    //println!("{:#?}", shard_state);
     assert_eq!(shard_state, post_state);
 }
 
