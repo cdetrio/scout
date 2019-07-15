@@ -11,7 +11,7 @@ edition = "2018"
 crate-type = ["cdylib"]
 
 [dependencies]
-tiny-keccak = "1.4"
+tiny-keccak = { path = "/Users/mbpro/dev_ewasm/tiny-keccak" }
 
 [dependencies.ewasm_api]
 git = "https://github.com/ewasm/ewasm-rust-api"
