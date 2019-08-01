@@ -99,18 +99,13 @@ fn process_block(pre_state_root: types::Bytes32, block_data: &[u8]) -> types::By
         );
 
         // set message
-        for j in 0..32 {
-            let path = vec![
-                Path::Ident("messages".to_string()),
-                Path::Index(i as u64),
-                Path::Ident("message".to_string()),
-                Path::Index(j),
-            ];
-
-            let bytes = vec![msg.message.as_ssz_bytes()[j as usize]];
-
-            assert_eq!(partial.set_bytes(path, bytes), Ok(()));
-        }
+        let path = vec![
+            Path::Ident("messages".to_string()),
+            Path::Index(i as u64),
+            Path::Ident("message".to_string()),
+            Path::Index((msg_bytes.len() - 1) as u64)
+        ];
+        assert_eq!(partial.set_bytes(path, msg.message.as_ssz_bytes()), Ok(()));
     }
 
     // set length
