@@ -4,6 +4,11 @@ extern crate wasmi;
 extern crate log;
 extern crate env_logger;
 
+use std::cmp::Ordering;
+
+#[macro_use]
+extern crate crunchy;
+
 use primitive_types::U256;
 use rustc_hex::{FromHex, ToHex};
 use serde::{Deserialize, Serialize};
@@ -15,6 +20,8 @@ use wasmi::{
     MemoryRef, Module, ModuleImportResolver, ModuleInstance, NopExternals, RuntimeArgs,
     RuntimeValue, Signature, Trap, TrapKind, ValueType,
 };
+
+use byteorder::{BigEndian, LittleEndian, ByteOrder};
 
 mod types;
 use crate::types::*;
@@ -31,6 +38,57 @@ const DEBUG_PRINTMEM_FUNC: usize = 8;
 const DEBUG_PRINTMEMHEX_FUNC: usize = 9;
 const BIGNUM_ADD256_FUNC: usize = 10;
 const BIGNUM_SUB256_FUNC: usize = 11;
+const BIGNUM_MULMODMONT256_FUNC: usize = 12;
+const BIGNUM_ADDMOD256_FUNC: usize = 13;
+const BIGNUM_SUBMOD256_FUNC: usize = 14;
+
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+struct BNU256(pub [u128; 2]);
+
+
+
+impl Ord for BNU256 {
+    #[inline]
+    fn cmp(&self, other: &BNU256) -> Ordering {
+        for (a, b) in self.0.iter().zip(other.0.iter()).rev() {
+            if *a < *b {
+                return Ordering::Less;
+            } else if *a > *b {
+                return Ordering::Greater;
+            }
+        }
+
+        return Ordering::Equal;
+    }
+}
+
+impl PartialOrd for BNU256 {
+    #[inline]
+    fn partial_cmp(&self, other: &BNU256) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl BNU256 {
+    /// Initialize U256 from slice of bytes (big endian)
+    pub fn from_slice(s: &[u8]) -> BNU256 {
+        if s.len() != 32 {
+            panic!("BNU256 from_slice error");
+        }
+
+        let mut n = [0; 2];
+        //for (l, i) in (0..2).rev().zip((0..2).map(|i| i * 16)) {
+        for (l, i) in (0..2).zip((0..2).map(|i| i * 16)) {
+            n[l] = LittleEndian::read_u128(&s[i..]);
+        }
+
+        BNU256(n)
+    }
+
+}
+
+
 
 struct Runtime<'a> {
     ticks_left: u32,
@@ -226,10 +284,289 @@ impl<'a> Externals for Runtime<'a> {
 
                 Ok(None)
             }
+
+
+            /* *** these bignum functions are used by https://github.com/cdetrio/rollup.rs/tree/benchreport-scout-bignums ***/
+
+            // the code for mulmodmont256 was taken from https://github.com/zcash-hackworks/bn
+            BIGNUM_MULMODMONT256_FUNC => {
+                let a_ptr: u32 = args.nth(0);
+                let b_ptr: u32 = args.nth(1);
+                let mod_ptr: u32 = args.nth(2);
+                let inv_ptr: u32 = args.nth(3);
+                let ret_ptr: u32 = args.nth(4);
+                // for the rollup.rs rust code, ret_ptr == a_ptr
+
+                let mut a_raw = [0u8; 32];
+                let mut b_raw = [0u8; 32];
+                let mut mod_raw = [0u8; 32];
+                let mut inv_raw = [0u8; 32];
+
+                let memory = self.memory.as_ref().expect("expects memory object");
+                memory
+                    .get_into(a_ptr, &mut a_raw)
+                    .expect("expects reading from memory to succeed");
+                memory
+                    .get_into(b_ptr, &mut b_raw)
+                    .expect("expects reading from memory to succeed");
+                memory
+                    .get_into(mod_ptr, &mut mod_raw)
+                    .expect("expects reading from memory to succeed");
+                memory
+                    .get_into(inv_ptr, &mut inv_raw)
+                    .expect("expects reading from memory to succeed");
+
+
+                //let mut a_u256 = U256::from_little_endian(&a_raw);
+                let mut a = BNU256::from_slice(&a_raw);
+                // a.0[1] are the hi (significant) bits
+                // a.0[0] are the low (least significant) bits
+
+                //let b_u256 = U256::from_little_endian(&b_raw);
+                let b = BNU256::from_slice(&b_raw);
+                //let modulus = U256::from_little_endian(&mod_raw);
+                let modulus = BNU256::from_slice(&mod_raw);
+                //let inv = U256::from_little_endian(&inv_raw);
+                let inv = BNU256::from_slice(&inv_raw);
+
+                mul_reduce(&mut a.0, &b.0, &modulus.0, inv.0[0]);
+
+                if a >= modulus {
+                    sub_noborrow(&mut a.0, &modulus.0);
+                }
+
+                let ret_lo = a.0[0].to_ne_bytes();
+                let ret_hi = a.0[1].to_ne_bytes();
+                let ret_raw = [&ret_lo[..], &ret_hi[..]].concat();
+
+                let ret_from_slice = BNU256::from_slice(&ret_raw);
+
+                memory
+                    .set(ret_ptr, &ret_raw)
+                    .expect("expects writing to memory to succeed");
+
+                Ok(None)
+            }
+            BIGNUM_ADDMOD256_FUNC => {
+                let a_ptr: u32 = args.nth(0);
+                let b_ptr: u32 = args.nth(1);
+                let mod_ptr: u32 = args.nth(2);
+                let ret_ptr: u32 = args.nth(3);
+
+                let mut a_raw = [0u8; 32];
+                let mut b_raw = [0u8; 32];
+                let mut mod_raw = [0u8; 32];
+                let mut ret_raw = [0u8; 32];
+
+                let memory = self.memory.as_ref().expect("expects memory object");
+                memory
+                    .get_into(a_ptr, &mut a_raw)
+                    .expect("expects reading from memory to succeed");
+                memory
+                    .get_into(b_ptr, &mut b_raw)
+                    .expect("expects reading from memory to succeed");
+                memory
+                    .get_into(mod_ptr, &mut mod_raw)
+                    .expect("expects reading from memory to succeed");
+
+                let a = U256::from_little_endian(&a_raw);
+                let b = U256::from_little_endian(&b_raw);
+                let modulus = U256::from_little_endian(&mod_raw);
+                let mut ret = a.overflowing_add(b).0;
+
+                if ret >= modulus {
+                    ret = ret.checked_sub(modulus).expect("addmod256 expects non-overflowing subtraction");
+                }
+
+                ret.to_little_endian(&mut ret_raw);
+
+                memory
+                    .set(ret_ptr, &ret_raw)
+                    .expect("expects writing to memory to succeed");
+
+                Ok(None)
+            }
+            BIGNUM_SUBMOD256_FUNC => {
+                let a_ptr: u32 = args.nth(0);
+                let b_ptr: u32 = args.nth(1);
+                let mod_ptr: u32 = args.nth(2);
+                let ret_ptr: u32 = args.nth(3);
+
+                let mut a_raw = [0u8; 32];
+                let mut b_raw = [0u8; 32];
+                let mut mod_raw = [0u8; 32];
+                let mut ret_raw = [0u8; 32];
+
+                let memory = self.memory.as_ref().expect("expects memory object");
+                memory
+                    .get_into(a_ptr, &mut a_raw)
+                    .expect("expects reading from memory to succeed");
+                memory
+                    .get_into(b_ptr, &mut b_raw)
+                    .expect("expects reading from memory to succeed");
+                memory
+                    .get_into(mod_ptr, &mut mod_raw)
+                    .expect("expects reading from memory to succeed");
+
+                let mut a = U256::from_little_endian(&a_raw);
+                let b = U256::from_little_endian(&b_raw);
+                let modulus = U256::from_little_endian(&mod_raw);
+
+                //println!("BIGNUM_SUBMOD256_FUNC a: {:?}    b: {:?}", a, b);
+
+                if a < b {
+                    a = a.overflowing_add(modulus).0;
+                }
+
+                let ret = a.checked_sub(b).expect("submod256 expects non-overflowing subtraction");
+
+                ret.to_little_endian(&mut ret_raw);
+
+                memory
+                    .set(ret_ptr, &ret_raw)
+                    .expect("expects writing to memory to succeed");
+
+                Ok(None)
+            }
             _ => panic!("unknown function index"),
         }
     }
 }
+
+
+
+
+#[inline(always)]
+fn split_u128(i: u128) -> (u128, u128) {
+    (i >> 64, i & 0xFFFFFFFFFFFFFFFF)
+}
+
+#[inline(always)]
+fn combine_u128(hi: u128, lo: u128) -> u128 {
+    (hi << 64) | lo
+}
+
+
+#[inline]
+fn sub_noborrow(a: &mut [u128; 2], b: &[u128; 2]) {
+    #[inline]
+    fn sbb(a: u128, b: u128, borrow: &mut u128) -> u128 {
+        let (a1, a0) = split_u128(a);
+        let (b1, b0) = split_u128(b);
+        let (b, r0) = split_u128((1 << 64) + a0 - b0 - *borrow);
+        let (b, r1) = split_u128((1 << 64) + a1 - b1 - ((b == 0) as u128));
+
+        *borrow = (b == 0) as u128;
+
+        combine_u128(r1, r0)
+    }
+
+    let mut borrow = 0;
+
+    for (a, b) in a.into_iter().zip(b.iter()) {
+        *a = sbb(*a, *b, &mut borrow);
+    }
+
+    debug_assert!(0 == borrow);
+}
+
+
+// TODO: Make `from_index` a const param
+#[inline(always)]
+fn mac_digit(from_index: usize, acc: &mut [u128; 4], b: &[u128; 2], c: u128) {
+    #[inline]
+    fn mac_with_carry(a: u128, b: u128, c: u128, carry: &mut u128) -> u128 {
+        let (b_hi, b_lo) = split_u128(b);
+        let (c_hi, c_lo) = split_u128(c);
+
+        let (a_hi, a_lo) = split_u128(a);
+        let (carry_hi, carry_lo) = split_u128(*carry);
+        let (x_hi, x_lo) = split_u128(b_lo * c_lo + a_lo + carry_lo);
+        let (y_hi, y_lo) = split_u128(b_lo * c_hi);
+        let (z_hi, z_lo) = split_u128(b_hi * c_lo);
+        // Brackets to allow better ILP
+        let (r_hi, r_lo) = split_u128((x_hi + y_lo) + (z_lo + a_hi) + carry_hi);
+
+        *carry = (b_hi * c_hi) + r_hi + y_hi + z_hi;
+
+        combine_u128(r_lo, x_lo)
+    }
+
+    if c == 0 {
+        return;
+    }
+
+    let mut carry = 0;
+
+    debug_assert_eq!(acc.len(), 4);
+    unroll! {
+        for i in 0..2 {
+            let a_index = i + from_index;
+            acc[a_index] = mac_with_carry(acc[a_index], b[i], c, &mut carry);
+        }
+    }
+    unroll! {
+        for i in 0..2 {
+            let a_index = i + from_index + 2;
+            if a_index < 4 {
+                let (a_hi, a_lo) = split_u128(acc[a_index]);
+                let (carry_hi, carry_lo) = split_u128(carry);
+                let (x_hi, x_lo) = split_u128(a_lo + carry_lo);
+                let (r_hi, r_lo) = split_u128(x_hi + a_hi + carry_hi);
+
+                carry = r_hi;
+
+                acc[a_index] = combine_u128(r_lo, x_lo);
+            }
+        }
+    }
+
+    debug_assert!(carry == 0);
+}
+
+#[inline]
+fn mul_reduce(this: &mut [u128; 2], by: &[u128; 2], modulus: &[u128; 2], inv: u128) {
+//fn mul_reduce(this: &mut [u128; 2], by: &[u128; 2], modulus: &[u128; 2], inv: u128, debug: bool) {
+    // The Montgomery reduction here is based on Algorithm 14.32 in
+    // Handbook of Applied Cryptography
+    // <http://cacr.uwaterloo.ca/hac/about/chap14.pdf>.
+
+    let mut res = [0; 2 * 2];
+    unroll! {
+        for i in 0..2 {
+            mac_digit(i, &mut res, by, this[i]);
+        }
+    }
+
+    /*
+    if debug {
+        println!("mul_reduce res after first mac_digit: {:?}", res);
+    }
+    */
+
+
+    unroll! {
+        for i in 0..2 {
+            let k = inv.wrapping_mul(res[i]);
+            /*
+            if debug {
+                println!("i={:?}  k={:?}", i, k);
+            }
+            */
+            mac_digit(i, &mut res, modulus, k);
+        }
+    }
+
+    /*
+    if debug {
+        println!("mul_reduce res after inv.wrapping_mul: {:?}", res);
+    }
+    */
+
+
+    this.copy_from_slice(&res[2..]);
+}
+
 
 struct RuntimeModuleImportResolver;
 
@@ -287,6 +624,18 @@ impl<'a> ModuleImportResolver for RuntimeModuleImportResolver {
             "bignum_sub256" => FuncInstance::alloc_host(
                 Signature::new(&[ValueType::I32, ValueType::I32, ValueType::I32][..], None),
                 BIGNUM_SUB256_FUNC,
+            ),
+            "mulmodmont256" => FuncInstance::alloc_host(
+                Signature::new(&[ValueType::I32, ValueType::I32, ValueType::I32, ValueType::I32, ValueType::I32][..], None),
+                BIGNUM_MULMODMONT256_FUNC,
+            ),
+            "addmod256" => FuncInstance::alloc_host(
+                Signature::new(&[ValueType::I32, ValueType::I32, ValueType::I32, ValueType::I32][..], None),
+                BIGNUM_ADDMOD256_FUNC,
+            ),
+            "submod256" => FuncInstance::alloc_host(
+                Signature::new(&[ValueType::I32, ValueType::I32, ValueType::I32, ValueType::I32][..], None),
+                BIGNUM_SUBMOD256_FUNC,
             ),
             _ => {
                 return Err(InterpreterError::Function(format!(
