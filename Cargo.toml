@@ -9,7 +9,7 @@ publish = false
 edition = "2018"
 
 [dependencies]
-wasmi = { path = "../wasmi" } # use this branch for profiling https://github.com/s1na/wasmi/commits/profile-invocations
+wasmi = { path = "../wasmi" } # use this branch for profiling https://github.com/cdetrio/wasmi/commits/profile-invocations-rolluprs-hostfuncs
 rustc-hex = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
